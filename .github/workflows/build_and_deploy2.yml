@@ -1,0 +1,157 @@
+name: Build and Deploy 2 😎
+
+on:
+  workflow_dispatch:
+
+permissions:
+  checks: write
+  contents: write
+
+env:
+  UNITY_PROJECT_PATH: .
+
+jobs:
+  test:
+    name: Run Unity Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - uses: actions/cache@v3
+        with:
+          path: Library
+          key: Library-test-${{ hashFiles('Assets/**', 'Packages/**', 'ProjectSettings/**') }}
+          restore-keys: |
+            Library-test-
+
+      - uses: game-ci/unity-test-runner@v4
+        id: testRunner
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          projectPath: ${{ env.UNITY_PROJECT_PATH }}
+          unityVersion: 6000.2.3f1
+          githubToken: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Test results (all modes)
+          path: ${{ steps.testRunner.outputs.artifactsPath }}
+
+  build-webgl:
+    name: Build WebGL
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      # Cleanup Docker to free space
+      - name: Clean Docker to free disk space
+        run: |
+          docker system prune -af || true
+          df -h
+
+      - uses: actions/cache@v3
+        with:
+          path: Library
+          key: Library-webgl-${{ hashFiles('Assets/**', 'Packages/**', 'ProjectSettings/**') }}
+          restore-keys: |
+            Library-webgl-
+
+      - uses: game-ci/unity-builder@v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          projectPath: ${{ env.UNITY_PROJECT_PATH }}
+          unityVersion: 6000.2.3f1
+          targetPlatform: WebGL
+          versioning: None
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Build-WebGL
+          path: build
+
+  build-windows:
+    name: Build Windows
+    runs-on: windows-2022
+    needs: test
+    strategy:
+      matrix:
+        targetPlatform: [StandaloneWindows64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - uses: actions/cache@v3
+        with:
+          path: Library
+          key: Library-${{ matrix.targetPlatform }}-${{ hashFiles('Assets/**', 'Packages/**', 'ProjectSettings/**') }}
+          restore-keys: |
+            Library-${{ matrix.targetPlatform }}-
+
+      - uses: game-ci/unity-builder@v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          projectPath: ${{ env.UNITY_PROJECT_PATH }}
+          unityVersion: 6000.2.3f1
+          targetPlatform: ${{ matrix.targetPlatform }}
+          versioning: None
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Build-${{ matrix.targetPlatform }}
+          path: build
+
+  deployPages:
+    needs: build-webgl
+    name: Deploy to Github Pages 🚀
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: Build-WebGL
+          path: build
+      - name: Deploy 🚀
+        uses: JamesIves/github-pages-deploy-action@4.1.4
+        with:
+          branch: gh-pages
+          folder: build/WebGL
+
+  deployItch:
+    needs: build-webgl
+    name: Deploy to Itch.io 🎮
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: Build-WebGL
+          path: build
+      - name: Install Butler
+        run: |
+          curl -L https://broth.itch.ovh/butler/linux-amd64/LATEST/archive/default \
+            | tar -xvz
+          sudo mv butler /usr/local/bin/
+      - name: Deploy to Itch.io
+        env:
+          BUTLER_API_KEY: ${{ secrets.ITCHIO_API_KEY }}
+        run: |
+          butler push build/WebGL rainy-day-studio-games/unity-test:webgl
